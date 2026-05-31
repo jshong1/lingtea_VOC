@@ -377,9 +377,10 @@ def main():
     # --------------------------------------------------------
     st.subheader("1. 기본 접수 정보")
 
-    col1, col2, col3 = st.columns(3)
+    # 첫 번째 행: 판매처, 유형, 접수 일자
+    row1_col1, row1_col2, row1_col3 = st.columns(3)
 
-    with col1:
+    with row1_col1:
         # 판매처 목록 로드 및 직접 입력 옵션 제공
         sellers_list = load_unique_sellers()
         sellers_options = sellers_list + ["+ 직접 입력 (새로 추가)"]
@@ -404,10 +405,7 @@ def main():
         else:
             판매처 = 판매처_선택
 
-        담당자 = st.text_input("**담당자** *", key="담당자",
-                               placeholder="담당자 이름")
-
-    with col2:
+    with row1_col2:
         # 유형 목록 로드 및 직접 입력 옵션 제공
         types_list = load_unique_types()
         types_options = types_list + ["+ 직접 입력 (새로 추가)"]
@@ -432,6 +430,21 @@ def main():
         else:
             유형 = 유형_선택
 
+    with row1_col3:
+        접수일자 = st.date_input(
+            "**접수 일자** *",
+            value=datetime.date.today(),
+            key="접수일자",
+        )
+
+    # 두 번째 행: 담당자, 고객유형, 고객명
+    row2_col1, row2_col2, row2_col3 = st.columns(3)
+
+    with row2_col1:
+        담당자 = st.text_input("**담당자** *", key="담당자",
+                               placeholder="담당자 이름")
+
+    with row2_col2:
         # 고객유형 목록 로드 및 직접 입력 옵션 제공
         cust_types_list = load_unique_customer_types()
         cust_types_options = cust_types_list + ["+ 직접 입력 (새로 추가)"]
@@ -456,12 +469,7 @@ def main():
         else:
             고객유형 = 고객유형_선택
 
-    with col3:
-        접수일자 = st.date_input(
-            "**접수 일자** *",
-            value=datetime.date.today(),
-            key="접수일자",
-        )
+    with row2_col3:
         고객명 = st.text_input("고객명", key="고객명", placeholder="홍길동")
 
     고객전화번호 = st.text_input(
