@@ -103,82 +103,107 @@ def get_worksheet():
         return None
 
 
-@st.cache_data(ttl=600)  # API 호출을 최소화하기 위해 10분 캐싱
+# ============================================================
+# 핵심 데이터 로딩 — API 호출은 단 1회 (10분 캐싱)
+# load_all_records() 하나로 전체 시트를 가져온 뒤
+# 판매처·유형·고객유형 목록은 그 결과에서 파생합니다.
+# ============================================================
+
+@st.cache_data(ttl=600)  # 10분 캐싱
+def load_all_records():
+    """구글 시트의 전체 VOC 데이터를 1회 API 호출로 가져와서 역순 리스트로 반환합니다."""
+    worksheet = get_worksheet()
+    if worksheet is None:
+        return []
+    try:
+        all_values = worksheet.get_all_values()
+        if len(all_values) <= 1:
+            return []
+
+        records_list = []
+        total_rows = len(all_values)
+        for idx in range(total_rows - 1, 0, -1):
+            row = all_values[idx]
+            if not row or not row[0]:
+                continue
+
+            row_dict = {
+                "row_idx": idx + 1,  # gspread는 1-based index
+                "연번":        row[0],
+                "월번":        row[1]  if len(row) >  1 else "",
+                "NO":          row[2]  if len(row) >  2 else "",
+                "판매처":      row[3]  if len(row) >  3 else "",
+                "담당자":      row[4]  if len(row) >  4 else "",
+                "유형":        row[5]  if len(row) >  5 else "",
+                "접수 일자":   row[6]  if len(row) >  6 else "",
+                "고객유형":    row[7]  if len(row) >  7 else "",
+                "고객명":      row[8]  if len(row) >  8 else "",
+                "고객 전화번호": row[9] if len(row) >  9 else "",
+                "대":          row[10] if len(row) > 10 else "",
+                "중":          row[11] if len(row) > 11 else "",
+                "소":          row[12] if len(row) > 12 else "",
+                "문의내용":    row[13] if len(row) > 13 else "",
+                "주문여부":    row[14] if len(row) > 14 else "",
+                "금액":        row[15] if len(row) > 15 else "",
+                "첫/재주문":   row[16] if len(row) > 16 else "",
+                "연령대":      row[17] if len(row) > 17 else "",
+                "성별":        row[18] if len(row) > 18 else "",
+                "인입경로":    row[19] if len(row) > 19 else "",
+                "중복 여부":   row[20] if len(row) > 20 else "",
+                "재출고 여부": row[21] if len(row) > 21 else "",
+                "성함":        row[22] if len(row) > 22 else "",
+                "운송장":      row[23] if len(row) > 23 else "",
+                "제품명":      row[24] if len(row) > 24 else "",
+                "발생수량(EA)": row[25] if len(row) > 25 else "",
+                "클레임 유형": row[26] if len(row) > 26 else "",
+                "보상":        row[27] if len(row) > 27 else "",
+            }
+            records_list.append(row_dict)
+        return records_list
+    except Exception as e:
+        st.error(f"데이터 로딩 실패: {e}")
+        return []
+
+
+# ── 아래 세 함수는 추가 API 호출 없이 캐시된 전체 데이터에서 파생합니다 ──
+
 def load_unique_sellers():
-    """스프레드시트에서 고유한 판매처 목록을 동적으로 로드합니다."""
-    worksheet = get_worksheet()
+    """판매처(D열) 고유 목록 — load_all_records() 캐시에서 파생."""
     default_sellers = ["공식몰", "네이버스마트스토어", "쿠팡", "지마켓", "카카오톡 선물하기"]
-    if worksheet is None:
+    records = load_all_records()
+    if not records:
         return default_sellers
-    try:
-        # D열 (4번째 열)에 입력된 판매처 데이터를 모두 가져옵니다.
-        col_values = worksheet.col_values(4)
-        # 헤더 및 제외할 텍스트 필터링
-        exclude_values = ["판매처", "통화내역/온라인 접수내역"]
-        sellers = [val.strip() for val in col_values[1:] if val.strip() and val.strip() not in exclude_values]
-        # 중복 제거 및 정렬
-        unique_sellers = sorted(list(set(sellers)))
-        
-        # 기본 판매처가 결과 목록에 없으면 추가
-        for ds in default_sellers:
-            if ds not in unique_sellers:
-                unique_sellers.append(ds)
-        return sorted(unique_sellers)
-    except Exception as e:
-        # 에러 발생 시 기본값 반환
-        return default_sellers
+    exclude = {"판매처", "통화내역/온라인 접수내역", ""}
+    sellers = {r["판매처"].strip() for r in records if r["판매처"].strip() not in exclude}
+    for ds in default_sellers:
+        sellers.add(ds)
+    return sorted(sellers)
 
 
-@st.cache_data(ttl=600)  # API 호출을 최소화하기 위해 10분 캐싱
 def load_unique_types():
-    """스프레드시트에서 고유한 유형 목록을 동적으로 로드합니다."""
-    worksheet = get_worksheet()
+    """유형(F열) 고유 목록 — load_all_records() 캐시에서 파생."""
     default_types = ["온라인", "유선"]
-    if worksheet is None:
+    records = load_all_records()
+    if not records:
         return default_types
-    try:
-        # F열 (6번째 열)에 입력된 유형 데이터를 모두 가져옵니다.
-        col_values = worksheet.col_values(6)
-        # 헤더 및 제외할 텍스트 필터링
-        exclude_values = ["유형", "통화내역/온라인 접수내역"]
-        types = [val.strip() for val in col_values[1:] if val.strip() and val.strip() not in exclude_values]
-        unique_types = sorted(list(set(types)))
-        
-        # 기본 유형이 결과 목록에 없으면 추가
-        for dt in default_types:
-            if dt not in unique_types:
-                unique_types.append(dt)
-        return sorted(unique_types)
-    except Exception as e:
-        # 에러 발생 시 기본값 반환
-        return default_types
+    exclude = {"유형", "통화내역/온라인 접수내역", ""}
+    types = {r["유형"].strip() for r in records if r["유형"].strip() not in exclude}
+    for dt in default_types:
+        types.add(dt)
+    return sorted(types)
 
 
-@st.cache_data(ttl=600)  # API 호출을 최소화하기 위해 10분 캐싱
 def load_unique_customer_types():
-    """스프레드시트에서 고유한 고객유형 목록을 동적으로 로드합니다."""
-    worksheet = get_worksheet()
+    """고객유형(H열) 고유 목록 — load_all_records() 캐시에서 파생."""
     default_cust_types = ["일반고객", "강성고객", "단골고객"]
-    if worksheet is None:
+    records = load_all_records()
+    if not records:
         return default_cust_types
-    try:
-        # H열 (8번째 열)에 입력된 고객유형 데이터를 모두 가져옵니다.
-        col_values = worksheet.col_values(8)
-        # 헤더 및 제외할 텍스트 필터링
-        exclude_values = ["고객유형", "통화내역/온라인 접수내역"]
-        cust_types = [val.strip() for val in col_values[1:] if val.strip() and val.strip() not in exclude_values]
-        unique_cust_types = sorted(list(set(cust_types)))
-        
-        # 기본 고객유형이 결과 목록에 없으면 추가
-        for dct in default_cust_types:
-            if dct not in unique_cust_types:
-                unique_cust_types.append(dct)
-        return sorted(unique_cust_types)
-    except Exception as e:
-        # 에러 발생 시 기본값 반환
-        return default_cust_types
-
-
+    exclude = {"고객유형", "통화내역/온라인 접수내역", ""}
+    cust_types = {r["고객유형"].strip() for r in records if r["고객유형"].strip() not in exclude}
+    for dct in default_cust_types:
+        cust_types.add(dct)
+    return sorted(cust_types)
 
 
 def get_next_numbers(worksheet, receipt_date: datetime.date):
@@ -330,12 +355,38 @@ def append_to_sheet(worksheet, row_data: list) -> bool:
         return False
 
 
+def update_sheet(worksheet, row_idx: int, row_data: list) -> bool:
+    """Google Sheets의 특정 행을 업데이트(수정)합니다."""
+    try:
+        # A{row_idx}부터 순서대로 업데이트 (예: A10:AB10)
+        # gspread에서 list of list 형태로 보냄
+        col_letter = chr(64 + len(row_data)) if len(row_data) <= 26 else "AB" # 최대 AB열까지 지원
+        cell_range = f"A{row_idx}:{col_letter}{row_idx}"
+        worksheet.update(cell_range, [row_data], value_input_option="USER_ENTERED")
+        return True
+    except Exception as e:
+        st.error(f"수정 오류: {e}")
+        return False
+
+
 # ============================================================
 # 폼 초기화
 # ============================================================
 
-def reset_form():
-    """Session State를 초기화하여 폼을 리셋합니다."""
+def reset_form(keep_shared_values: bool = False):
+    """
+    Session State를 초기화하여 폼을 리셋합니다.
+    keep_shared_values가 True이면 공통 정보(판매처, 담당자, 유형, 접수일자, 분류 등)를 유지합니다.
+    """
+    # 초기화에서 제외할 항목 설정 (값 유지 모드일 때)
+    shared_keys = [
+        "판매처", "판매처_선택", "판매처_직접입력", 
+        "유형", "유형_선택", "유형_직접입력",
+        "고객유형", "고객유형_선택", "고객유형_직접입력",
+        "담당자", "접수일자",
+        "대분류", "중분류", "소분류"
+    ]
+    
     keys_to_reset = [
         "판매처", "판매처_선택", "판매처_직접입력", 
         "유형", "유형_선택", "유형_직접입력",
@@ -347,10 +398,23 @@ def reset_form():
         "재출고여부", "성함", "운송장", "제품명", "발생수량",
         "클레임유형", "보상",
     ]
+    
     for key in keys_to_reset:
+        if keep_shared_values and key in shared_keys:
+            continue
         if key in st.session_state:
             del st.session_state[key]
+            
+    # 수정 모드 상태도 해제
+    if "edit_mode" in st.session_state:
+        del st.session_state["edit_mode"]
+    if "edit_row_idx" in st.session_state:
+        del st.session_state["edit_row_idx"]
+    if "edit_serial" in st.session_state:
+        del st.session_state["edit_serial"]
+        
     st.session_state["form_reset"] = True
+
 
 
 # ============================================================
@@ -364,7 +428,186 @@ def main():
         layout="wide",
     )
 
+    # --------------------------------------------------------
+    # 사이드바: 날짜/판매처/담당자 필터링 및 불러오기/수정 기능
+    # --------------------------------------------------------
+    st.sidebar.title("📋 최근 등록 내역 조회")
+
+    # 1. 날짜 필터 입력창 배치
+    st.sidebar.markdown("### 📅 접수일자 필터")
+    col_start, col_end = st.sidebar.columns(2)
+    with col_start:
+        start_date = st.date_input("시작일", value=datetime.date.today() - datetime.timedelta(days=7), key="filter_start")
+    with col_end:
+        end_date = st.date_input("종료일", value=datetime.date.today(), key="filter_end")
+
+    # 2. 판매처(D열) / 담당자(E열) 필터 — 기존 데이터 기반 동적 목록
+    st.sidebar.markdown("### 🏪 판매처 / 👤 담당자 필터")
+
+    # 전체 데이터에서 판매처·담당자 고유값 추출 (필터 선택창 구성용)
+    _all_for_filter = load_all_records()
+    _all_sellers  = sorted({r["판매처"]  for r in _all_for_filter if r.get("판매처")})
+    _all_managers = sorted({r["담당자"]  for r in _all_for_filter if r.get("담당자")})
+
+    filter_sellers  = st.sidebar.multiselect(
+        "판매처 (D열)",
+        options=_all_sellers,
+        default=[],
+        placeholder="전체 (선택 안 하면 전체 조회)",
+        key="filter_sellers",
+    )
+    filter_managers = st.sidebar.multiselect(
+        "담당자 (E열)",
+        options=_all_managers,
+        default=[],
+        placeholder="전체 (선택 안 하면 전체 조회)",
+        key="filter_managers",
+    )
+
+    search_triggered = st.sidebar.button("조회 🔍", use_container_width=True)
+
+    # 세션 상태로 조회 조건을 유지
+    if "filter_start_applied" not in st.session_state:
+        st.session_state["filter_start_applied"]   = start_date
+        st.session_state["filter_end_applied"]     = end_date
+        st.session_state["filter_sellers_applied"] = filter_sellers
+        st.session_state["filter_managers_applied"]= filter_managers
+
+    if search_triggered:
+        st.session_state["filter_start_applied"]   = start_date
+        st.session_state["filter_end_applied"]     = end_date
+        st.session_state["filter_sellers_applied"] = filter_sellers
+        st.session_state["filter_managers_applied"]= filter_managers
+
+    # 데이터 로딩 및 필터링
+    all_records = load_all_records()
+    filtered_records = []
+
+    # 날짜 + 판매처 + 담당자 필터 조건 복합 적용
+    applied_sellers  = st.session_state.get("filter_sellers_applied",  [])
+    applied_managers = st.session_state.get("filter_managers_applied", [])
+
+    for rec in all_records:
+        # G열(접수 일자) 날짜 필터
+        rec_date_str = rec.get("접수 일자", "").strip()[:10]
+        try:
+            rec_date = datetime.datetime.strptime(rec_date_str, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if not (st.session_state["filter_start_applied"] <= rec_date <= st.session_state["filter_end_applied"]):
+            continue
+
+        # D열(판매처) 필터 — 선택된 값이 없으면 전체 허용
+        if applied_sellers and rec.get("판매처", "") not in applied_sellers:
+            continue
+
+        # E열(담당자) 필터 — 선택된 값이 없으면 전체 허용
+        if applied_managers and rec.get("담당자", "") not in applied_managers:
+            continue
+
+        filtered_records.append(rec)
+
+    # G열(접수 일자) 기준 최신순 정렬
+    def parse_rec_date(rec):
+        d_str = rec.get("접수 일자", "").strip()[:10]
+        try:
+            return datetime.datetime.strptime(d_str, "%Y-%m-%d").date()
+        except:
+            return datetime.date.min
+
+    filtered_records = sorted(filtered_records, key=parse_rec_date, reverse=True)
+
+    st.sidebar.markdown(f"**검색 결과: {len(filtered_records)}건**")
+
+    if not filtered_records:
+        st.sidebar.info("조회 조건에 해당하는 등록 내역이 없습니다.")
+    else:
+        # 5개 카드 높이(약 620px)를 기준 삼아 고정하고, 6개부터는 스크롤할 수 있도록 CSS 컨테이너 추가
+        # max-height: 620px; overflow-y: auto; 속성 부여
+        scrollable_container = st.sidebar.container(height=620)
+        
+        with scrollable_container:
+            for rec in filtered_records:
+                # 카드 형태의 정보 표기
+                with st.container(border=True):
+                    st.write(f"**연번 {rec['연번']}** | {rec['고객명'] or '고객명 없음'} ({rec['접수 일자']})")
+                    st.write(f"*{rec['판매처']} | {rec['대']} > {rec['중']}*")
+                    if rec['문의내용']:
+                        st.caption(rec['문의내용'][:40] + ("..." if len(rec['문의내용']) > 40 else ""))
+                    
+                    # 불러오기 버튼 클릭 핸들러
+                    if st.button(f"불러오기 📂", key=f"load_{rec['row_idx']}_{rec['연번']}"):
+                        # 세션 상태에 복사 데이터 채워넣기
+                        st.session_state["edit_mode"] = True
+                        st.session_state["edit_row_idx"] = rec["row_idx"]
+                        st.session_state["edit_serial"] = rec["연번"]
+                        
+                        # 폼 바인딩 데이터 설정
+                        st.session_state["판매처_선택"] = rec["판매처"] if rec["판매처"] in load_unique_sellers() else "+ 직접 입력 (새로 추가)"
+                        if st.session_state["판매처_선택"] == "+ 직접 입력 (새로 추가)":
+                            st.session_state["판매처_직접입력"] = rec["판매처"]
+                            
+                        st.session_state["유형_선택"] = rec["유형"] if rec["유형"] in load_unique_types() else "+ 직접 입력 (새로 추가)"
+                        if st.session_state["유형_선택"] == "+ 직접 입력 (새로 추가)":
+                            st.session_state["유형_직접입력"] = rec["유형"]
+                            
+                        st.session_state["고객유형_선택"] = rec["고객유형"] if rec["고객유형"] in load_unique_customer_types() else "+ 직접 입력 (새로 추가)"
+                        if st.session_state["고객유형_선택"] == "+ 직접 입력 (새로 추가)":
+                            st.session_state["고객유형_직접입력"] = rec["고객유형"]
+                        
+                        st.session_state["담당자"] = rec["담당자"]
+                        try:
+                            st.session_state["접수일자"] = datetime.datetime.strptime(rec["접수 일자"][:10], "%Y-%m-%d").date()
+                        except:
+                            st.session_state["접수일자"] = datetime.date.today()
+                            
+                        st.session_state["고객명"] = rec["고객명"]
+                        st.session_state["고객전화번호"] = rec["고객 전화번호"]
+                        st.session_state["대분류"] = rec["대"]
+                        st.session_state["중분류"] = rec["중"]
+                        st.session_state["소분류"] = rec["소"]
+                        st.session_state["문의내용"] = rec["문의내용"]
+                        st.session_state["주문여부"] = rec["주문여부"]
+                        
+                        try:
+                            st.session_state["금액"] = int(rec["금액"]) if rec["금액"] else 0
+                        except:
+                            st.session_state["금액"] = 0
+                        
+                        st.session_state["첫재주문"] = rec["첫/재주문"]
+                        st.session_state["연령대"] = rec["연령대"]
+                        st.session_state["성별"] = rec["성별"]
+                        st.session_state["인입경로"] = rec["인입경로"]
+                        st.session_state["중복여부"] = rec["중복 여부"]
+                        
+                        # 배송품질 관련 처리
+                        has_delivery_info = bool(rec["성함"] or rec["제품명"] or rec["클레임 유형"])
+                        st.session_state["show_delivery"] = has_delivery_info
+                        
+                        st.session_state["재출고여부"] = rec["재출고 여부"]
+                        st.session_state["성함"] = rec["성함"]
+                        st.session_state["운송장"] = rec["운송장"]
+                        st.session_state["제품명"] = rec["제품명"]
+                        
+                        try:
+                            st.session_state["발생수량"] = int(rec["발생수량(EA)"]) if rec["발생수량(EA)"] else 0
+                        except:
+                            st.session_state["발생수량"] = 0
+                            
+                        st.session_state["클레임유형"] = rec["클레임 유형"]
+                        st.session_state["보상"] = rec["보상"]
+                        
+                        st.rerun()
+
     st.title("📋 VOC 데일리 응대 입력 시스템")
+    
+    # 수정 모드 표시 배너
+    if st.session_state.get("edit_mode"):
+        st.warning(f"⚠️ 현재 **[수정 모드]** 활성화 상태입니다. (연번: {st.session_state.get('edit_serial')}) 저장 시 구글 시트의 해당 행이 수정(덮어쓰기)됩니다.")
+        if st.button("❌ 수정 취소 및 신규 등록으로 전환", use_container_width=True):
+            reset_form(keep_shared_values=False)
+            st.rerun()
+            
     st.caption("고객감동팀 VOC 상담/문의 내용을 입력하고 저장하세요. ※ 굵은 글씨 항목은 필수 입력값입니다.")
 
     # 폼 리셋 후 페이지 재로드 플래그 처리
@@ -486,15 +729,30 @@ def main():
     st.subheader("2. CS 분류")
 
     large_options = [""] + get_large_categories()
-    대분류 = st.selectbox("**대분류** *", options=large_options, key="대분류")
+    
+    default_large_idx = 0
+    if "대분류" in st.session_state and st.session_state["대분류"] in large_options:
+        default_large_idx = large_options.index(st.session_state["대분류"])
+        
+    대분류 = st.selectbox("**대분류** *", options=large_options, index=default_large_idx, key="대분류")
 
     middle_options = [""] + get_middle_categories(대분류) if 대분류 else [""]
-    중분류 = st.selectbox("**중분류** *", options=middle_options, key="중분류")
+    
+    default_middle_idx = 0
+    if "중분류" in st.session_state and st.session_state["중분류"] in middle_options:
+        default_middle_idx = middle_options.index(st.session_state["중분류"])
+        
+    중분류 = st.selectbox("**중분류** *", options=middle_options, index=default_middle_idx, key="중분류")
 
     small_options_raw = get_small_categories(대분류, 중분류)
     if small_options_raw:
         small_options = [""] + small_options_raw
-        소분류 = st.selectbox("**소분류** *", options=small_options, key="소분류")
+        
+        default_small_idx = 0
+        if "소분류" in st.session_state and st.session_state["소분류"] in small_options:
+            default_small_idx = small_options.index(st.session_state["소분류"])
+            
+        소분류 = st.selectbox("**소분류** *", options=small_options, index=default_small_idx, key="소분류")
         소분류_label = "**소분류** *"
     else:
         소분류 = st.selectbox(
@@ -689,9 +947,19 @@ def main():
                     st.write(f"**{k}**: {v}")
 
     # --------------------------------------------------------
-    # 저장 버튼
+    # 연속 등록 여부 체크박스 & 저장/수정 버튼
     # --------------------------------------------------------
-    if st.button("💾 저장", type="primary", use_container_width=True):
+    keep_values = st.checkbox(
+        "🔁 저장 후 공통 입력값 유지 (판매처, 담당자, 유형, 접수일자, 대/중/소분류 등)",
+        value=False,
+        key="keep_shared_values",
+        help="체크 시 저장 완료 후 고객명, 전화번호, 문의내용만 지워지고 공통 분류 정보 등은 그대로 유지되어 연속 입력이 편리해집니다."
+    )
+
+    is_edit_mode = st.session_state.get("edit_mode", False)
+    btn_label = "💾 수정 완료 (구글 시트 덮어쓰기)" if is_edit_mode else "💾 신규 저장"
+
+    if st.button(btn_label, type="primary", use_container_width=True):
 
         # 폼 데이터 수집
         form_data = {
@@ -733,54 +1001,117 @@ def main():
             if worksheet is None:
                 st.error("Google Sheets 연결에 실패했습니다. secrets 설정을 확인하세요.")
             else:
-                # 자동 번호 생성
-                next_serial, next_monthly, next_no = get_next_numbers(
-                    worksheet, 접수일자
-                )
+                if is_edit_mode:
+                    # 수정 모드: 기존 연번, 월번, NO 유지
+                    row_idx = st.session_state["edit_row_idx"]
+                    edit_serial = st.session_state["edit_serial"]
+                    
+                    # 기존 번호들은 사이드바 로드한 것에서 찾거나 재생성 방지
+                    # 안전을 위해 구글 시트의 해당 행에서 직접 앞번호 3개를 읽거나 기존 세션 값을 유지
+                    # 여기서는 기존 연번 유지 및 구글 시트에 업데이트할 행 데이터 구성
+                    
+                    # gspread를 통한 행 값 재조회(동기화 유무)가 필요할 수 있으나,
+                    # 불러올 당시의 연번을 그대로 넣어줌
+                    # 기존의 연번, 월번, NO 유지
+                    recent_list = load_all_records()
+                    target_rec = next((r for r in recent_list if r["row_idx"] == row_idx), None)
+                    
+                    if target_rec:
+                        cur_serial = target_rec["연번"]
+                        cur_monthly = target_rec["월번"]
+                        cur_no = target_rec["NO"]
+                    else:
+                        cur_serial = edit_serial
+                        cur_monthly = ""
+                        cur_no = edit_serial
 
-                # 저장 데이터 구성 (컬럼 순서 고정)
-                row_data = [
-                    next_serial,                              # 연번
-                    next_monthly,                             # 월번
-                    next_no,                                  # NO
-                    form_data["판매처"],                      # 판매처
-                    form_data["담당자"],                      # 담당자
-                    form_data["유형"],                        # 유형
-                    form_data["접수 일자"],                   # 접수 일자
-                    form_data["고객유형"],                    # 고객유형
-                    form_data["고객명"],                      # 고객명
-                    form_data["고객 전화번호"],               # 고객 전화번호
-                    form_data["대"],                          # 대
-                    form_data["중"],                          # 중
-                    form_data["소"],                          # 소
-                    form_data["문의내용"],                    # 문의내용
-                    form_data["주문여부"],                    # 주문여부
-                    form_data["금액"] if form_data["금액"] != "" else "",  # 금액
-                    form_data["첫/재주문"],                   # 첫/재주문
-                    form_data["연령대"],                      # 연령대
-                    form_data["성별"],                        # 성별
-                    form_data["인입경로"],                    # 인입경로
-                    form_data["중복 여부"],                   # 중복 여부
-                    form_data["재출고 여부"],                 # 재출고 여부
-                    form_data["성함"],                        # 성함
-                    form_data["운송장"],                      # 운송장
-                    form_data["제품명"],                      # 제품명
-                    form_data["발생수량(EA)"] if form_data["발생수량(EA)"] != "" else "",  # 발생수량(EA)
-                    form_data["클레임 유형"],                 # 클레임 유형
-                    form_data["보상"],                        # 보상
-                ]
-
-                # 저장 실행
-                success = append_to_sheet(worksheet, row_data)
-                if success:
-                    st.success(
-                        f"✅ 저장 완료되었습니다! (연번: {next_serial}, 월번: {next_monthly})"
+                    row_data = [
+                        cur_serial,                               # 연번
+                        cur_monthly,                              # 월번
+                        cur_no,                                   # NO
+                        form_data["판매처"],                      # 판매처
+                        form_data["담당자"],                      # 담당자
+                        form_data["유형"],                        # 유형
+                        form_data["접수 일자"],                   # 접수 일자
+                        form_data["고객유형"],                    # 고객유형
+                        form_data["고객명"],                      # 고객명
+                        form_data["고객 전화번호"],               # 고객 전화번호
+                        form_data["대"],                          # 대
+                        form_data["중"],                          # 중
+                        form_data["소"],                          # 소
+                        form_data["문의내용"],                    # 문의내용
+                        form_data["주문여부"],                    # 주문여부
+                        form_data["금액"] if form_data["금액"] != "" else "",  # 금액
+                        form_data["첫/재주문"],                   # 첫/재주문
+                        form_data["연령대"],                      # 연령대
+                        form_data["성별"],                        # 성별
+                        form_data["인입경로"],                    # 인입경로
+                        form_data["중복 여부"],                   # 중복 여부
+                        form_data["재출고 여부"],                 # 재출고 여부
+                        form_data["성함"],                        # 성함
+                        form_data["운송장"],                      # 운송장
+                        form_data["제품명"],                      # 제품명
+                        form_data["발생수량(EA)"] if form_data["발생수량(EA)"] != "" else "",  # 발생수량(EA)
+                        form_data["클레임 유형"],                 # 클레임 유형
+                        form_data["보상"],                        # 보상
+                    ]
+                    
+                    success = update_sheet(worksheet, row_idx, row_data)
+                    if success:
+                        st.success(f"✅ 연번 {edit_serial}번 항목이 성공적으로 수정되었습니다!")
+                        st.balloons()
+                        st.cache_data.clear()
+                        # 리셋
+                        reset_form(keep_shared_values=keep_values)
+                else:
+                    # 신규 등록 모드
+                    next_serial, next_monthly, next_no = get_next_numbers(
+                        worksheet, 접수일자
                     )
-                    st.balloons()
-                    # 캐시 초기화하여 새로 추가된 판매처 반영
-                    st.cache_data.clear()
-                    # 폼 초기화
-                    reset_form()
+
+                    # 저장 데이터 구성 (컬럼 순서 고정)
+                    row_data = [
+                        next_serial,                              # 연번
+                        next_monthly,                             # 월번
+                        next_no,                                  # NO
+                        form_data["판매처"],                      # 판매처
+                        form_data["담당자"],                      # 담당자
+                        form_data["유형"],                        # 유형
+                        form_data["접수 일자"],                   # 접수 일자
+                        form_data["고객유형"],                    # 고객유형
+                        form_data["고객명"],                      # 고객명
+                        form_data["고객 전화번호"],               # 고객 전화번호
+                        form_data["대"],                          # 대
+                        form_data["중"],                          # 중
+                        form_data["소"],                          # 소
+                        form_data["문의내용"],                    # 문의내용
+                        form_data["주문여부"],                    # 주문여부
+                        form_data["금액"] if form_data["금액"] != "" else "",  # 금액
+                        form_data["첫/재주문"],                   # 첫/재주문
+                        form_data["연령대"],                      # 연령대
+                        form_data["성별"],                        # 성별
+                        form_data["인입경로"],                    # 인입경로
+                        form_data["중복 여부"],                   # 중복 여부
+                        form_data["재출고 여부"],                 # 재출고 여부
+                        form_data["성함"],                        # 성함
+                        form_data["운송장"],                      # 운송장
+                        form_data["제품명"],                      # 제품명
+                        form_data["발생수량(EA)"] if form_data["발생수량(EA)"] != "" else "",  # 발생수량(EA)
+                        form_data["클레임 유형"],                 # 클레임 유형
+                        form_data["보상"],                        # 보상
+                    ]
+
+                    # 저장 실행
+                    success = append_to_sheet(worksheet, row_data)
+                    if success:
+                        st.success(
+                            f"✅ 신규 저장 완료되었습니다! (연번: {next_serial}, 월번: {next_monthly})"
+                        )
+                        st.balloons()
+                        # 캐시 초기화하여 새로 추가된 판매처 반영
+                        st.cache_data.clear()
+                        # 폼 초기화
+                        reset_form(keep_shared_values=keep_values)
 
 
 if __name__ == "__main__":
