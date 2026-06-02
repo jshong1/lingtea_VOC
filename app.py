@@ -9,6 +9,9 @@ import gspread
 from google.oauth2.service_account import Credentials
 import datetime
 import re
+import json
+import anthropic
+import streamlit.components.v1 as components
 
 # ============================================================
 # CS 분류표 (대 > 중 > 소 종속 드롭다운)
@@ -418,6 +421,163 @@ def reset_form(keep_shared_values: bool = False):
 
 
 # ============================================================
+# AI 분석 리포트 생성 로직
+# ============================================================
+
+def generate_ai_report(records, selected_model):
+    try:
+        api_key = st.secrets["anthropic"]["api_key"]
+    except KeyError:
+        st.error("설정 오류: `.streamlit/secrets.toml` 파일에 `[anthropic]` 및 `api_key`가 설정되어 있지 않습니다.")
+        return
+
+    if not records:
+        st.warning("분석할 VOC 데이터가 없습니다.")
+        return
+
+    # 전처리: 토큰 절약을 위해 핵심 필드만 추출
+    processed_data = []
+    for r in records:
+        processed_data.append({
+            "날짜": r.get("접수 일자", "")[:10],
+            "채널": r.get("유형", ""),
+            "분류": f"{r.get('대', '')}>{r.get('중', '')}>{r.get('소', '')}",
+            "클레임": r.get("클레임 유형", ""),
+            "내용": r.get("문의내용", "")
+        })
+
+    # JSON 덤프
+    data_str = json.dumps(processed_data, ensure_ascii=False)
+    
+    # 데이터가 너무 크면 자르기 (대략 15만 자)
+    if len(data_str) > 150000:
+        st.warning("데이터가 너무 많아 최근 데이터 위주로 분석이 제한될 수 있습니다.")
+        data_str = data_str[:150000]
+
+    prompt = f"""
+당신은 고객 경험(CX) 데이터 분석가입니다. 
+다음은 특정 기간 동안 인입된 VOC(Voice of Customer) 데이터입니다.
+총 {len(processed_data)}건의 데이터가 있습니다.
+
+이 데이터를 바탕으로 종합적인 'VOC 분석 리포트'를 마크다운 형식으로 작성해주세요.
+리포트는 다음 목차를 포함하여 체계적이고 구체적인 수치/내용을 바탕으로 작성해주시기 바랍니다:
+
+1. **VOC 현황 요약**: 총 접수 건수 및 전반적 추이 (채널별 문의량, 주요 이슈 등)
+2. **채널 및 유형별 분석**: 유입 채널별 비중 및 대/중/소 분류별 주요 문의 유형 비중
+3. **고객 불만/제안 요약**: '내용' 필드에서 반복적으로 나타나는 주요 불만 사항(예: 파손, 환불, 품질 등) 및 고객 제안 사항 상세 요약
+4. **품질/배송 민원 현황**: 관능/변성/이물 등 품질 관련 클레임과 파손/지연/오배송 등 배송 관련 클레임 현황 (구체적인 사례 포함)
+5. **종합 인사이트 및 제안**: 데이터 기반 CX 향상 및 프로세스 개선을 위한 액션 아이템 제안
+
+⚠️ **강력한 제한 사항 (글자수 초과/짤림 방지)**: 
+- 데이터량이 많아 답변이 길어질 경우 텍스트가 중간에 짤리는 현상이 발생하고 있습니다.
+- 따라서 **전체 리포트는 절대 2,500자를 넘지 않도록 극도로 요약**해 주세요.
+- 각 목차(1~5번)별로 **최대 3~4개의 핵심 포인트만 불릿(Bullet) 형태**로 서술하고, 불필요한 부연 설명은 생략하여 문장이 끝까지 온전히 완성되도록 조절해 주세요.
+
+VOC 데이터:
+```json
+{data_str}
+```
+"""
+
+    with st.spinner(f"{selected_model} 모델이 데이터를 분석하고 리포트를 생성하는 중입니다..."):
+        try:
+            client = anthropic.Anthropic(api_key=api_key)
+            response = client.messages.create(
+                model=selected_model,
+                max_tokens=4000,
+                temperature=0.2,
+                system="전문적인 CX 분석 리포트를 마크다운으로 작성하세요. 중요한 숫자나 주요 이슈는 굵은 글씨로 강조하세요.",
+                messages=[
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            report = response.content[0].text
+            st.markdown(report)
+            
+            # PDF 인쇄(장표 형태)를 위한 전역 CSS 주입
+            print_css = """
+            <style>
+            @media print {
+                /* 사이드바, 헤더 등 숨김 */
+                [data-testid="stSidebar"], 
+                header[data-testid="stHeader"], 
+                .stApp > header, 
+                footer, 
+                .stDeployButton {
+                    display: none !important;
+                }
+                
+                /* 여백 최적화 */
+                .stApp, .main .block-container {
+                    max-width: 100% !important;
+                    padding: 0 !important;
+                    margin: 0 !important;
+                }
+
+                /* 장표 느낌의 폰트 및 페이지 나누기 */
+                body {
+                    font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif !important;
+                    font-size: 14pt !important;
+                    color: #000 !important;
+                }
+                
+                /* 2번 항목(대제목 수준) 등에서 페이지 넘김 유도 */
+                h1, h2 {
+                    page-break-before: always;
+                    break-before: page;
+                    margin-top: 0 !important;
+                }
+                h1:first-of-type, h2:first-of-type {
+                    page-break-before: auto;
+                    break-before: auto;
+                }
+
+                p, li, table {
+                    page-break-inside: avoid;
+                    break-inside: avoid;
+                }
+            }
+            </style>
+            """
+            st.markdown(print_css, unsafe_allow_html=True)
+            
+            # 인쇄를 트리거하는 자바스크립트 버튼 주입
+            print_button_html = """
+            <div style="text-align: right; margin-top: 20px;">
+                <button onclick="window.parent.print()" 
+                        style="padding: 12px 24px; background-color: #ff4b4b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                    📥 리포트 PDF로 다운로드 (인쇄)
+                </button>
+            </div>
+            """
+            components.html(print_button_html, height=80)
+            
+        except Exception as e:
+            st.error(f"AI 리포트 생성 중 오류가 발생했습니다: {e}")
+
+def render_ai_report_tab(records):
+    st.title("📊 AI VOC 리포트 분석")
+    st.write(f"현재 사이드바 필터 조건에 해당하는 **{len(records)}건**의 데이터를 바탕으로 AI 분석 리포트를 생성합니다.")
+    st.info("💡 제공된 월간 리포트 양식(현황 요약, 채널 분석, 불만/제안 요약, 품질민원 등)을 기반으로 심층 분석을 수행합니다.")
+    
+    # 모델 선택 옵션 제공 (계정 권한/버전에 따른 404 방지)
+    selected_model = st.selectbox(
+        "사용할 AI 모델 선택 (오류 발생 시 다른 모델로 변경해보세요)",
+        options=[
+            "claude-sonnet-4-5",
+            "claude-3-5-sonnet-20241022",
+            "claude-3-5-sonnet-20240620",
+            "claude-3-sonnet-20240229",
+            "claude-3-haiku-20240307",
+            "claude-3-opus-20240229"
+        ],
+        index=0
+    )
+    
+    if st.button("🤖 AI 리포트 생성 시작", type="primary", use_container_width=True):
+        generate_ai_report(records, selected_model)
+
+# ============================================================
 # Streamlit 앱 메인
 # ============================================================
 
@@ -527,7 +687,11 @@ def main():
         scrollable_container = st.sidebar.container(height=620)
         
         with scrollable_container:
-            for rec in filtered_records:
+            # 렌더링 최적화를 위해 최신 50건만 표시
+            if len(filtered_records) > 50:
+                st.warning(f"검색 결과가 많아 최신 50건만 목록에 표시합니다. (전체 {len(filtered_records)}건 AI 리포트 생성은 정상 동작합니다)")
+
+            for rec in filtered_records[:50]:
                 # 카드 형태의 정보 표기
                 with st.container(border=True):
                     st.write(f"**연번 {rec['연번']}** | {rec['고객명'] or '고객명 없음'} ({rec['접수 일자']})")
@@ -598,6 +762,17 @@ def main():
                         st.session_state["보상"] = rec["보상"]
                         
                         st.rerun()
+
+    st.sidebar.divider()
+    st.sidebar.markdown("### 📊 AI 리포트 기능")
+    if st.sidebar.button("🤖 AI 리포트 생성 (현재 조건)", use_container_width=True):
+        st.session_state["show_ai_report"] = True
+    if st.sidebar.button("📋 입력 폼으로 돌아가기", use_container_width=True):
+        st.session_state["show_ai_report"] = False
+
+    if st.session_state.get("show_ai_report"):
+        render_ai_report_tab(filtered_records)
+        return
 
     st.title("📋 VOC 데일리 응대 입력 시스템")
     
