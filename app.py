@@ -10,7 +10,7 @@ from google.oauth2.service_account import Credentials
 import datetime
 import re
 import json
-import anthropic
+import pandas as pd
 import streamlit.components.v1 as components
 
 # ============================================================
@@ -421,161 +421,259 @@ def reset_form(keep_shared_values: bool = False):
 
 
 # ============================================================
-# AI 분석 리포트 생성 로직
+# 통계 분석 리포트 생성 로직 (AI 요약 대체)
 # ============================================================
 
-def generate_ai_report(records, selected_model):
-    try:
-        api_key = st.secrets["anthropic"]["api_key"]
-    except KeyError:
-        st.error("설정 오류: `.streamlit/secrets.toml` 파일에 `[anthropic]` 및 `api_key`가 설정되어 있지 않습니다.")
-        return
+def map_online_channel(seller):
+    if not isinstance(seller, str): return '오픈마켓'
+    seller = seller.replace(' ', '')
+    if any(k in seller for k in ['해피톡', '채팅', '톡', '플러스친구']):
+        return '실시간 채팅상담'
+    elif '공식몰' in seller:
+        return '공식몰'
+    elif '네이버' in seller or '스마트스토어' in seller:
+        return '네이버'
+    elif '쿠팡' in seller:
+        return '쿠팡'
+    else:
+        return '오픈마켓'
 
+def map_inquiry_type(main_cat):
+    if not isinstance(main_cat, str): return '기타'
+    if main_cat == '주문': return '주문'
+    elif main_cat == '문의': return '일반문의'
+    elif main_cat == '배송': return '배송'
+    elif main_cat == '품질': return '품질'
+    elif main_cat == '고객의견': return '서비스'
+    elif main_cat == '단순': return '단순/재인입'
+    return main_cat
+
+def render_ai_report_tab(records):
+    st.title("📊 통계 데이터 분석 리포트")
+    st.write(f"현재 사이드바 필터 조건에 해당하는 **{len(records)}건**의 데이터를 바탕으로 통계 리포트를 생성합니다.")
+    st.info("💡 전년 동월 데이터는 '전년 동월(건)' 컬럼을 더블 클릭하여 수기로 직접 입력하실 수 있습니다.")
+    
     if not records:
         st.warning("분석할 VOC 데이터가 없습니다.")
         return
-
-    # 전처리: 토큰 절약을 위해 핵심 필드만 추출
-    processed_data = []
-    for r in records:
-        processed_data.append({
-            "날짜": r.get("접수 일자", "")[:10],
-            "채널": r.get("유형", ""),
-            "분류": f"{r.get('대', '')}>{r.get('중', '')}>{r.get('소', '')}",
-            "클레임": r.get("클레임 유형", ""),
-            "내용": r.get("문의내용", "")
-        })
-
-    # JSON 덤프
-    data_str = json.dumps(processed_data, ensure_ascii=False)
+        
+    df = pd.DataFrame(records)
+    # 접수 일자를 datetime으로 변환
+    df['접수 일자'] = pd.to_datetime(df['접수 일자'].str[:10], errors='coerce')
+    df = df.dropna(subset=['접수 일자'])
     
-    # 데이터가 너무 크면 자르기 (대략 15만 자)
-    if len(data_str) > 150000:
-        st.warning("데이터가 너무 많아 최근 데이터 위주로 분석이 제한될 수 있습니다.")
-        data_str = data_str[:150000]
+    if df.empty:
+        st.warning("유효한 날짜가 포함된 데이터가 없습니다.")
+        return
 
-    prompt = f"""
-당신은 고객 경험(CX) 데이터 분석가입니다. 
-다음은 특정 기간 동안 인입된 VOC(Voice of Customer) 데이터입니다.
-총 {len(processed_data)}건의 데이터가 있습니다.
-
-이 데이터를 바탕으로 종합적인 'VOC 분석 리포트'를 마크다운 형식으로 작성해주세요.
-리포트는 다음 목차를 포함하여 체계적이고 구체적인 수치/내용을 바탕으로 작성해주시기 바랍니다:
-
-1. **VOC 현황 요약**: 총 접수 건수 및 전반적 추이 (채널별 문의량, 주요 이슈 등)
-2. **채널 및 유형별 분석**: 유입 채널별 비중 및 대/중/소 분류별 주요 문의 유형 비중
-3. **고객 불만/제안 요약**: '내용' 필드에서 반복적으로 나타나는 주요 불만 사항(예: 파손, 환불, 품질 등) 및 고객 제안 사항 상세 요약
-4. **품질/배송 민원 현황**: 관능/변성/이물 등 품질 관련 클레임과 파손/지연/오배송 등 배송 관련 클레임 현황 (구체적인 사례 포함)
-5. **종합 인사이트 및 제안**: 데이터 기반 CX 향상 및 프로세스 개선을 위한 액션 아이템 제안
-
-⚠️ **강력한 제한 사항 (글자수 초과/짤림 방지)**: 
-- 데이터량이 많아 답변이 길어질 경우 텍스트가 중간에 짤리는 현상이 발생하고 있습니다.
-- 따라서 **전체 리포트는 절대 2,500자를 넘지 않도록 극도로 요약**해 주세요.
-- 각 목차(1~5번)별로 **최대 3~4개의 핵심 포인트만 불릿(Bullet) 형태**로 서술하고, 불필요한 부연 설명은 생략하여 문장이 끝까지 온전히 완성되도록 조절해 주세요.
-
-VOC 데이터:
-```json
-{data_str}
-```
-"""
-
-    with st.spinner(f"{selected_model} 모델이 데이터를 분석하고 리포트를 생성하는 중입니다..."):
-        try:
-            client = anthropic.Anthropic(api_key=api_key)
-            response = client.messages.create(
-                model=selected_model,
-                max_tokens=4000,
-                temperature=0.2,
-                system="전문적인 CX 분석 리포트를 마크다운으로 작성하세요. 중요한 숫자나 주요 이슈는 굵은 글씨로 강조하세요.",
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
-            report = response.content[0].text
-            st.markdown(report)
-            
-            # PDF 인쇄(장표 형태)를 위한 전역 CSS 주입
-            print_css = """
-            <style>
-            @media print {
-                /* 사이드바, 헤더 등 숨김 */
-                [data-testid="stSidebar"], 
-                header[data-testid="stHeader"], 
-                .stApp > header, 
-                footer, 
-                .stDeployButton {
-                    display: none !important;
-                }
-                
-                /* 여백 최적화 */
-                .stApp, .main .block-container {
-                    max-width: 100% !important;
-                    padding: 0 !important;
-                    margin: 0 !important;
-                }
-
-                /* 장표 느낌의 폰트 및 페이지 나누기 */
-                body {
-                    font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif !important;
-                    font-size: 14pt !important;
-                    color: #000 !important;
-                }
-                
-                /* 2번 항목(대제목 수준) 등에서 페이지 넘김 유도 */
-                h1, h2 {
-                    page-break-before: always;
-                    break-before: page;
-                    margin-top: 0 !important;
-                }
-                h1:first-of-type, h2:first-of-type {
-                    page-break-before: auto;
-                    break-before: auto;
-                }
-
-                p, li, table {
-                    page-break-inside: avoid;
-                    break-inside: avoid;
-                }
-            }
-            </style>
-            """
-            st.markdown(print_css, unsafe_allow_html=True)
-            
-            # 인쇄를 트리거하는 자바스크립트 버튼 주입
-            print_button_html = """
-            <div style="text-align: right; margin-top: 20px;">
-                <button onclick="window.parent.print()" 
-                        style="padding: 12px 24px; background-color: #ff4b4b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-                    📥 리포트 PDF로 다운로드 (인쇄)
-                </button>
-            </div>
-            """
-            components.html(print_button_html, height=80)
-            
-        except Exception as e:
-            st.error(f"AI 리포트 생성 중 오류가 발생했습니다: {e}")
-
-def render_ai_report_tab(records):
-    st.title("📊 AI VOC 리포트 분석")
-    st.write(f"현재 사이드바 필터 조건에 해당하는 **{len(records)}건**의 데이터를 바탕으로 AI 분석 리포트를 생성합니다.")
-    st.info("💡 제공된 월간 리포트 양식(현황 요약, 채널 분석, 불만/제안 요약, 품질민원 등)을 기반으로 심층 분석을 수행합니다.")
+    # --------------------------------------------------------
+    # 테이블 1: 유선/온라인 채널 증감
+    # --------------------------------------------------------
+    st.subheader("1. 유선/온라인 채널 전년 동월 대비 VOC 접수 증감 현황")
     
-    # 모델 선택 옵션 제공 (계정 권한/버전에 따른 404 방지)
-    selected_model = st.selectbox(
-        "사용할 AI 모델 선택 (오류 발생 시 다른 모델로 변경해보세요)",
-        options=[
-            "claude-sonnet-4-5",
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-sonnet-20240620",
-            "claude-3-sonnet-20240229",
-            "claude-3-haiku-20240307",
-            "claude-3-opus-20240229"
+    t1_counts = df['유형'].value_counts()
+    wired = t1_counts.get('유선', 0)
+    online = t1_counts.get('온라인', 0)
+    total_1 = wired + online
+    
+    df1 = pd.DataFrame({
+        "접수 채널": ["유선", "온라인", "총계"],
+        "당월(건)": [wired, online, total_1],
+        "당월 비중(%)": [
+            f"{(wired/total_1*100):.1f}%" if total_1 else "0%",
+            f"{(online/total_1*100):.1f}%" if total_1 else "0%",
+            "100%"
         ],
-        index=0
-    )
+        "전년 동월(건)": [None, None, None],
+        "전년 동월 비중(%)": [None, None, None],
+        "전년동월 대비 증감(%)": [None, None, None],
+    })
     
-    if st.button("🤖 AI 리포트 생성 시작", type="primary", use_container_width=True):
-        generate_ai_report(records, selected_model)
+    # st.data_editor를 사용하여 편집 가능하게 출력
+    st.data_editor(df1, hide_index=True, use_container_width=True, key="table1")
+
+    # --------------------------------------------------------
+    # 테이블 2: 온라인 채널별 증감
+    # --------------------------------------------------------
+    st.subheader("2. 온라인 채널별 전년 동월 대비 VOC 접수 증감 현황")
+    
+    df_online = df[df['유형'] == '온라인'].copy()
+    df_online['온라인접수채널'] = df_online['판매처'].apply(map_online_channel)
+    t2_counts = df_online['온라인접수채널'].value_counts()
+    
+    channels = ["실시간 채팅상담", "공식몰", "네이버", "쿠팡", "오픈마켓"]
+    t2_data = []
+    total_2 = sum(t2_counts.get(c, 0) for c in channels)
+    
+    for c in channels:
+        cnt = t2_counts.get(c, 0)
+        t2_data.append({
+            "온라인 접수 채널": c,
+            "당월(건)": cnt,
+            "당월 비중(%)": f"{(cnt/total_2*100):.1f}%" if total_2 else "0%"
+        })
+    
+    df2 = pd.DataFrame(t2_data)
+    df2.loc[len(df2)] = {"온라인 접수 채널": "총계", "당월(건)": total_2, "당월 비중(%)": "100%"}
+    df2["전년 동월(건)"] = None
+    df2["전년 동월 비중(%)"] = None
+    df2["전년동월 대비 증감(%)"] = None
+    
+    st.data_editor(df2, hide_index=True, use_container_width=True, key="table2")
+    
+    # --------------------------------------------------------
+    # 테이블 3: 문의 유형별 증감
+    # --------------------------------------------------------
+    st.subheader("3. 문의 유형별 전년 동월 대비 VOC 접수 증감 현황")
+    
+    df['문의유형분류'] = df['대'].apply(map_inquiry_type)
+    t3_counts = df['문의유형분류'].value_counts()
+    
+    inq_types = ["주문", "일반문의", "배송", "품질", "서비스", "단순/재인입"]
+    t3_data = []
+    total_3 = sum(t3_counts.get(t, 0) for t in inq_types)
+    
+    for t in inq_types:
+        cnt = t3_counts.get(t, 0)
+        t3_data.append({
+            "문의유형": t,
+            "당월(건)": cnt,
+            "당월 비중(%)": f"{(cnt/total_3*100):.1f}%" if total_3 else "0%"
+        })
+    
+    df3 = pd.DataFrame(t3_data)
+    df3.loc[len(df3)] = {"문의유형": "총계", "당월(건)": total_3, "당월 비중(%)": "100%"}
+    df3["전년 동월(건)"] = None
+    df3["전년 동월 비중(%)"] = None
+    df3["전년동월 대비 증감(%)"] = None
+    
+    st.data_editor(df3, hide_index=True, use_container_width=True, key="table3")
+
+    # --------------------------------------------------------
+    # 테이블 4: 최근 6개월 추이
+    # --------------------------------------------------------
+    st.subheader("4. 최근 6개월 VOC 유형별 접수 추이")
+    st.caption("※ 6개월 추이는 사이드바 필터에 관계없이 시트의 **전체 데이터**를 기반으로 '기준 월'부터 과거 6개월을 계산합니다.")
+    
+    all_recs = load_all_records()
+    df_all = pd.DataFrame(all_recs)
+    df_all['접수 일자'] = pd.to_datetime(df_all['접수 일자'].str[:10], errors='coerce')
+    df_all = df_all.dropna(subset=['접수 일자'])
+    
+    available_months = sorted(list(set(df_all['접수 일자'].dt.to_period('M').astype(str))), reverse=True)
+    if not available_months:
+        st.warning("전체 데이터가 부족하여 6개월 추이를 생성할 수 없습니다.")
+        return
+        
+    target_month = st.selectbox("기준 월 선택", options=available_months, index=0)
+    
+    if target_month:
+        target_dt = pd.to_datetime(target_month)
+        months_6 = [(target_dt - pd.DateOffset(months=i)).strftime('%Y-%m') for i in range(5, -1, -1)]
+        
+        start_dt = pd.to_datetime(months_6[0])
+        end_dt = target_dt + pd.offsets.MonthEnd(1)
+        
+        df_6m = df_all[(df_all['접수 일자'] >= start_dt) & (df_all['접수 일자'] <= end_dt)].copy()
+        df_6m['YearMonth'] = df_6m['접수 일자'].dt.strftime('%Y-%m')
+        
+        # '대' 와 '중'이 비어있는 경우 처리
+        df_6m['대'] = df_6m['대'].replace('', '미분류')
+        df_6m['중'] = df_6m['중'].replace('', '미분류')
+        
+        pivot_df = pd.pivot_table(df_6m, index=['대', '중'], columns='YearMonth', values='연번', aggfunc='count', fill_value=0).reset_index()
+        
+        for m in months_6:
+            if m not in pivot_df.columns:
+                pivot_df[m] = 0
+                
+        rename_dict = {m: f"{pd.to_datetime(m).month}월" for m in months_6}
+        rename_dict['대'] = '대분류'
+        rename_dict['중'] = '중분류'
+        pivot_df = pivot_df.rename(columns=rename_dict)
+        
+        display_months = [f"{pd.to_datetime(m).month}월" for m in months_6]
+        col_order = ['대분류', '중분류'] + display_months
+        pivot_df = pivot_df[col_order]
+        
+        target_m_col = display_months[-1]
+        prev_m_col = display_months[-2] if len(display_months) >= 2 else None
+        
+        total_target_m = pivot_df[target_m_col].sum()
+        
+        if total_target_m > 0:
+            pcts = (pivot_df[target_m_col] / total_target_m * 100).round(1)
+            diff = round(100.0 - pcts.sum(), 1)
+            if diff != 0:
+                max_idx = pcts.idxmax()
+                pcts[max_idx] = round(pcts[max_idx] + diff, 1)
+            pivot_df['비중(%)'] = pcts.apply(lambda x: f"{x:.1f}%")
+        else:
+            pivot_df['비중(%)'] = "0.0%"
+        
+        if prev_m_col:
+            def calc_mom(row):
+                curr = row[target_m_col]
+                prev = row[prev_m_col]
+                if prev == 0:
+                    return "상승" if curr > 0 else "-"
+                diff = (curr - prev) / prev * 100
+                if diff > 0:
+                    return f"▲{diff:.0f}%"
+                elif diff < 0:
+                    return f"▼{abs(diff):.0f}%"
+                else:
+                    return "0%"
+            pivot_df['전월 대비 증감'] = pivot_df.apply(calc_mom, axis=1)
+        else:
+            pivot_df['전월 대비 증감'] = "-"
+            
+        # 총계 행 추가
+        total_row = {'대분류': '총계', '중분류': ''}
+        for m in display_months:
+            total_row[m] = pivot_df[m].sum()
+        total_row['비중(%)'] = '100.0%' if total_target_m > 0 else '0.0%'
+        
+        if prev_m_col:
+            curr_tot = total_row[target_m_col]
+            prev_tot = total_row[prev_m_col]
+            if prev_tot == 0:
+                total_row['전월 대비 증감'] = "상승" if curr_tot > 0 else "-"
+            else:
+                diff_tot = (curr_tot - prev_tot) / prev_tot * 100
+                if diff_tot > 0:
+                    total_row['전월 대비 증감'] = f"▲{diff_tot:.0f}%"
+                elif diff_tot < 0:
+                    total_row['전월 대비 증감'] = f"▼{abs(diff_tot):.0f}%"
+                else:
+                    total_row['전월 대비 증감'] = "0%"
+        else:
+            total_row['전월 대비 증감'] = "-"
+            
+        pivot_df = pd.concat([pivot_df, pd.DataFrame([total_row])], ignore_index=True)
+            
+        st.dataframe(pivot_df, hide_index=True, use_container_width=True)
+
+    print_css = """
+    <style>
+    @media print {
+        [data-testid="stSidebar"], header[data-testid="stHeader"], footer { display: none !important; }
+        .stApp { max-width: 100% !important; padding: 0 !important; }
+        body { font-family: 'Malgun Gothic', sans-serif !important; font-size: 12pt !important; color: #000 !important; }
+    }
+    </style>
+    """
+    st.markdown(print_css, unsafe_allow_html=True)
+    
+    print_button_html = """
+    <div style="text-align: right; margin-top: 20px;">
+        <button onclick="window.parent.print()" 
+                style="padding: 12px 24px; background-color: #ff4b4b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+            📥 리포트 PDF로 다운로드 (인쇄)
+        </button>
+    </div>
+    """
+    components.html(print_button_html, height=80)
 
 # ============================================================
 # Streamlit 앱 메인
