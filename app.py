@@ -700,27 +700,67 @@ def main():
         end_date = st.date_input("종료일", value=datetime.date.today(), key="filter_end")
 
     # 2. 판매처(D열) / 담당자(E열) 필터 — 기존 데이터 기반 동적 목록
-    st.sidebar.markdown("### 🏪 판매처 / 👤 담당자 필터")
+    with st.sidebar.expander("🏪 판매처 / 👤 담당자 필터", expanded=False):
+        # 전체 데이터에서 판매처·담당자 고유값 추출 (필터 선택창 구성용)
+        _all_for_filter = load_all_records()
+        _all_sellers  = sorted({r["판매처"]  for r in _all_for_filter if r.get("판매처")})
+        _all_managers = sorted({r["담당자"]  for r in _all_for_filter if r.get("담당자")})
 
-    # 전체 데이터에서 판매처·담당자 고유값 추출 (필터 선택창 구성용)
-    _all_for_filter = load_all_records()
-    _all_sellers  = sorted({r["판매처"]  for r in _all_for_filter if r.get("판매처")})
-    _all_managers = sorted({r["담당자"]  for r in _all_for_filter if r.get("담당자")})
+        filter_sellers  = st.multiselect(
+            "판매처 (D열)",
+            options=_all_sellers,
+            default=[],
+            placeholder="전체 (선택 안 하면 전체 조회)",
+            key="filter_sellers",
+        )
+        filter_managers = st.multiselect(
+            "담당자 (E열)",
+            options=_all_managers,
+            default=[],
+            placeholder="전체 (선택 안 하면 전체 조회)",
+            key="filter_managers",
+        )
 
-    filter_sellers  = st.sidebar.multiselect(
-        "판매처 (D열)",
-        options=_all_sellers,
-        default=[],
-        placeholder="전체 (선택 안 하면 전체 조회)",
-        key="filter_sellers",
-    )
-    filter_managers = st.sidebar.multiselect(
-        "담당자 (E열)",
-        options=_all_managers,
-        default=[],
-        placeholder="전체 (선택 안 하면 전체 조회)",
-        key="filter_managers",
-    )
+    # 3. CS 분류 필터 추가
+    with st.sidebar.expander("🏷️ CS 분류 필터", expanded=False):
+        _all_large_options = get_large_categories()
+        filter_large = st.multiselect(
+            "대분류",
+            options=_all_large_options,
+            default=[],
+            placeholder="전체 (공란일 경우 전체 조회)",
+            key="filter_large_ui"
+        )
+
+        _all_middle_options = set()
+        large_list_for_mid = filter_large if filter_large else _all_large_options
+        for l in large_list_for_mid:
+            _all_middle_options.update(get_middle_categories(l))
+        
+        filter_middle = st.multiselect(
+            "중분류",
+            options=sorted(list(_all_middle_options)),
+            default=[],
+            placeholder="전체 (공란일 경우 전체 조회)",
+            key="filter_middle_ui"
+        )
+
+        _all_small_options = set()
+        middle_list_for_small = filter_middle if filter_middle else _all_middle_options
+        for l in large_list_for_mid:
+            for m in middle_list_for_small:
+                if m in get_middle_categories(l):
+                    _all_small_options.update(get_small_categories(l, m))
+                    
+        _all_small_options_clean = [opt for opt in _all_small_options if opt]
+                    
+        filter_small = st.multiselect(
+            "소분류",
+            options=sorted(list(_all_small_options_clean)),
+            default=[],
+            placeholder="전체 (공란일 경우 전체 조회)",
+            key="filter_small_ui"
+        )
 
     search_triggered = st.sidebar.button("조회 🔍", use_container_width=True)
 
@@ -730,20 +770,37 @@ def main():
         st.session_state["filter_end_applied"]     = end_date
         st.session_state["filter_sellers_applied"] = filter_sellers
         st.session_state["filter_managers_applied"]= filter_managers
+        st.session_state["filter_large_applied"]   = filter_large
+        st.session_state["filter_middle_applied"]  = filter_middle
+        st.session_state["filter_small_applied"]   = filter_small
 
     if search_triggered:
         st.session_state["filter_start_applied"]   = start_date
         st.session_state["filter_end_applied"]     = end_date
         st.session_state["filter_sellers_applied"] = filter_sellers
         st.session_state["filter_managers_applied"]= filter_managers
+        st.session_state["filter_large_applied"]   = filter_large
+        st.session_state["filter_middle_applied"]  = filter_middle
+        st.session_state["filter_small_applied"]   = filter_small
+
+    st.sidebar.divider()
+    st.sidebar.markdown("### 📊 AI 리포트 기능")
+    if st.sidebar.button("🤖 AI 리포트 생성 (현재 조건)", use_container_width=True):
+        st.session_state["show_ai_report"] = True
+    if st.sidebar.button("📋 입력 폼으로 돌아가기", use_container_width=True):
+        st.session_state["show_ai_report"] = False
+    st.sidebar.divider()
 
     # 데이터 로딩 및 필터링
     all_records = load_all_records()
     filtered_records = []
 
-    # 날짜 + 판매처 + 담당자 필터 조건 복합 적용
+    # 날짜 + 판매처 + 담당자 + 분류 필터 조건 복합 적용
     applied_sellers  = st.session_state.get("filter_sellers_applied",  [])
     applied_managers = st.session_state.get("filter_managers_applied", [])
+    applied_large    = st.session_state.get("filter_large_applied", [])
+    applied_middle   = st.session_state.get("filter_middle_applied", [])
+    applied_small    = st.session_state.get("filter_small_applied", [])
 
     for rec in all_records:
         # G열(접수 일자) 날짜 필터
@@ -763,6 +820,14 @@ def main():
         if applied_managers and rec.get("담당자", "") not in applied_managers:
             continue
 
+        # K열(대), L열(중), M열(소) 필터 - 선택된 값이 없으면 전체 허용
+        if applied_large and rec.get("대", "") not in applied_large:
+            continue
+        if applied_middle and rec.get("중", "") not in applied_middle:
+            continue
+        if applied_small and rec.get("소", "") not in applied_small:
+            continue
+
         filtered_records.append(rec)
 
     # G열(접수 일자) 기준 최신순 정렬
@@ -775,7 +840,30 @@ def main():
 
     filtered_records = sorted(filtered_records, key=parse_rec_date, reverse=True)
 
-    st.sidebar.markdown(f"**검색 결과: {len(filtered_records)}건**")
+    col_res1, col_res2 = st.sidebar.columns([1, 1])
+    with col_res1:
+        st.markdown(f"**검색 결과: {len(filtered_records)}건**")
+    with col_res2:
+        if filtered_records:
+            import io
+            df_export = pd.DataFrame(filtered_records)
+            if 'row_idx' in df_export.columns:
+                df_export = df_export.drop(columns=['row_idx'])
+            
+            output = io.BytesIO()
+            try:
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df_export.to_excel(writer, index=False, sheet_name='VOC_Records')
+                excel_data = output.getvalue()
+                st.download_button(
+                    label="📥 엑셀 다운로드",
+                    data=excel_data,
+                    file_name=f"VOC_검색결과_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+            except Exception as e:
+                st.error("openpyxl 패키지가 필요합니다.")
 
     if not filtered_records:
         st.sidebar.info("조회 조건에 해당하는 등록 내역이 없습니다.")
@@ -860,13 +948,6 @@ def main():
                         st.session_state["보상"] = rec["보상"]
                         
                         st.rerun()
-
-    st.sidebar.divider()
-    st.sidebar.markdown("### 📊 AI 리포트 기능")
-    if st.sidebar.button("🤖 AI 리포트 생성 (현재 조건)", use_container_width=True):
-        st.session_state["show_ai_report"] = True
-    if st.sidebar.button("📋 입력 폼으로 돌아가기", use_container_width=True):
-        st.session_state["show_ai_report"] = False
 
     if st.session_state.get("show_ai_report"):
         render_ai_report_tab(filtered_records)
